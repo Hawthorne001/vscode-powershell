@@ -2,24 +2,25 @@ name: CI Tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
     # The branches below must be a subset of the branches above
-    branches: [ main ]
+    branches: [main]
   merge_group:
-    types: [ checks_requested ]
+    types: [checks_requested]
 
 jobs:
   ci:
     name: node
     strategy:
       matrix:
-        os: [ windows-latest, macos-latest, ubuntu-latest ]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     env:
       DOTNET_NOLOGO: true
       DOTNET_GENERATE_ASPNET_CERTIFICATE: false
       DISPLAY: ':99.0'
+    timeout-minutes: 10
     steps:
       - name: Checkout PowerShellEditorServices
         uses: actions/checkout@v4
@@ -31,6 +32,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: vscode-powershell
+
+      - name: Validate snippets JSON file
+        shell: pwsh
+        run: $null = ConvertFrom-Json -InputObject (Get-Content -Raw -Path './snippets/PowerShell.json')
+        working-directory: vscode-powershell
 
       - name: Install dotnet
         uses: actions/setup-dotnet@v4
@@ -46,7 +52,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: npm
           cache-dependency-path: vscode-powershell/package-lock.json
 

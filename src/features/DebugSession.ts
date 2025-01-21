@@ -22,7 +22,10 @@ import {
     InputBoxOptions,
     QuickPickItem,
     QuickPickOptions,
-    DebugConfigurationProviderTriggerKind
+    DebugConfigurationProviderTriggerKind,
+    DebugAdapterTrackerFactory,
+    DebugAdapterTracker,
+    LogOutputChannel
 } from "vscode";
 import type { DebugProtocol } from "@vscode/debugprotocol";
 import { NotificationType, RequestType } from "vscode-languageclient";
@@ -126,6 +129,7 @@ export class DebugSessionFeature extends LanguageClientConsumer
     private tempSessionDetails: IEditorServicesSessionDetails | undefined;
     private commands: Disposable[] = [];
     private handlers: Disposable[] = [];
+    private adapterName = "PowerShell";
 
     constructor(context: ExtensionContext, private sessionManager: SessionManager, private logger: ILogger) {
         super();
@@ -165,12 +169,17 @@ export class DebugSessionFeature extends LanguageClientConsumer
             DebugConfigurationProviderTriggerKind.Dynamic
         ];
 
+
         for (const triggerKind of triggers) {
             context.subscriptions.push(
-                debug.registerDebugConfigurationProvider("PowerShell", this, triggerKind));
+                debug.registerDebugConfigurationProvider(this.adapterName, this, triggerKind)
+            );
         }
 
-        context.subscriptions.push(debug.registerDebugAdapterDescriptorFactory("PowerShell", this));
+        context.subscriptions.push(
+            debug.registerDebugAdapterTrackerFactory(this.adapterName, new PowerShellDebugAdapterTrackerFactory(this.adapterName)),
+            debug.registerDebugAdapterDescriptorFactory(this.adapterName, this)
+        );
     }
 
     public override onLanguageClientSet(languageClient: LanguageClient): void {
@@ -290,6 +299,7 @@ export class DebugSessionFeature extends LanguageClientConsumer
 
         const settings = getSettings();
         config.createTemporaryIntegratedConsole ??= settings.debugging.createTemporaryIntegratedConsole;
+        config.executeMode ??= settings.debugging.executeMode;
         if (config.request === "attach") {
             resolvedConfig = await this.resolveAttachDebugConfiguration(config);
         } else if (config.request === "launch") {
@@ -325,8 +335,8 @@ export class DebugSessionFeature extends LanguageClientConsumer
         // Create or show the debug terminal (either temporary or session).
         this.sessionManager.showDebugTerminal(true);
 
-        this.logger.writeVerbose(`Connecting to pipe: ${sessionDetails.debugServicePipeName}`);
-        this.logger.writeVerbose(`Debug configuration: ${JSON.stringify(session.configuration, undefined, 2)}`);
+        this.logger.writeDebug(`Connecting to pipe: ${sessionDetails.debugServicePipeName}`);
+        this.logger.writeDebug(`Debug configuration: ${JSON.stringify(session.configuration, undefined, 2)}`);
 
         return new DebugAdapterNamedPipeServer(sessionDetails.debugServicePipeName);
     }
@@ -414,7 +424,7 @@ export class DebugSessionFeature extends LanguageClientConsumer
                 // The dispose shorthand demonry for making an event one-time courtesy of: https://github.com/OmniSharp/omnisharp-vscode/blob/b8b07bb12557b4400198895f82a94895cb90c461/test/integrationTests/launchConfiguration.integration.test.ts#L41-L45
                 startDebugEvent.dispose();
 
-                this.logger.writeVerbose(`Debugger session detected: ${dotnetAttachSession.name} (${dotnetAttachSession.id})`);
+                this.logger.writeDebug(`Debugger session detected: ${dotnetAttachSession.name} (${dotnetAttachSession.id})`);
 
                 tempConsoleDotnetAttachSession = dotnetAttachSession;
 
@@ -424,7 +434,7 @@ export class DebugSessionFeature extends LanguageClientConsumer
                     // Makes the event one-time
                     stopDebugEvent.dispose();
 
-                    this.logger.writeVerbose(`Debugger session terminated: ${tempConsoleSession.name} (${tempConsoleSession.id})`);
+                    this.logger.writeDebug(`Debugger session terminated: ${tempConsoleSession.name} (${tempConsoleSession.id})`);
 
                     // HACK: As of 2023-08-17, there is no vscode debug API to request the C# debugger to detach, so we send it a custom DAP request instead.
                     const disconnectRequest: DebugProtocol.DisconnectRequest = {
@@ -452,8 +462,8 @@ export class DebugSessionFeature extends LanguageClientConsumer
             // Start a child debug session to attach the dotnet debugger
             // TODO: Accommodate multi-folder workspaces if the C# code is in a different workspace folder
             await debug.startDebugging(undefined, dotnetAttachConfig, session);
-            this.logger.writeVerbose(`Dotnet attach debug configuration: ${JSON.stringify(dotnetAttachConfig, undefined, 2)}`);
-            this.logger.writeVerbose(`Attached dotnet debugger to process: ${pid}`);
+            this.logger.writeDebug(`Dotnet attach debug configuration: ${JSON.stringify(dotnetAttachConfig, undefined, 2)}`);
+            this.logger.writeDebug(`Attached dotnet debugger to process: ${pid}`);
         }
 
         return this.tempSessionDetails;
@@ -591,6 +601,61 @@ export class DebugSessionFeature extends LanguageClientConsumer
         const item = await window.showQuickPick(items, options);
 
         return item?.id ?? undefined;
+    }
+}
+
+class PowerShellDebugAdapterTrackerFactory implements DebugAdapterTrackerFactory, Disposable {
+    disposables: Disposable[] = [];
+    constructor(private adapterName = "PowerShell") {}
+
+
+    _log: LogOutputChannel | undefined;
+    /** Lazily creates a {@link LogOutputChannel} for debug tracing, and presents it only when DAP logging is enabled.
+    *
+    * We want to use a shared output log for separate debug sessions as usually only one is running at a time and we
+    * dont need an output window for every debug session. We also want to leave it active so user can copy and paste
+    * even on run end. When user changes the setting and disables it getter will return undefined, which will result
+    * in a noop for the logging activities, effectively pausing logging but not disposing the output channel. If the
+    * user re-enables, then logging resumes.
+    */
+    get log(): LogOutputChannel | undefined {
+        if (workspace.getConfiguration("powershell.developer").get<boolean>("traceDap") && this._log === undefined) {
+            this._log = window.createOutputChannel(`${this.adapterName}: Trace DAP`, { log: true });
+            this.disposables.push(this._log);
+        }
+        return this._log;
+    }
+
+    // This tracker effectively implements the logging for the debug adapter to a LogOutputChannel
+    createDebugAdapterTracker(session: DebugSession): DebugAdapterTracker {
+        const sessionInfo = `${this.adapterName} Debug Session: ${session.name} [${session.id}]`;
+        return {
+            onWillStartSession: () => this.log?.info(`Starting ${sessionInfo}. Set log level to trace to see DAP messages beyond errors`),
+            onWillStopSession: () => this.log?.info(`Stopping ${sessionInfo}`),
+            onExit: code => this.log?.info(`${sessionInfo} exited with code ${code}`),
+            onWillReceiveMessage: (m): void => {
+                this.log?.debug(`➡️${m.seq} ${m.type}: ${m.command}`);
+                if (m.arguments && (Array.isArray(m.arguments) ? m.arguments.length > 0 : Object.keys(m.arguments).length > 0)) {
+                    this.log?.trace(`${m.seq}: ` + JSON.stringify(m.arguments, undefined, 2));
+                }
+            },
+            onDidSendMessage: (m):void => {
+                const responseSummary = m.request_seq !== undefined
+                    ? `${m.success ? "✅" : "❌"}${m.request_seq} ${m.type}(${m.seq}): ${m.command}`
+                    : `⬅️${m.seq} ${m.type}: ${m.event ?? m.command}`;
+                this.log?.debug(
+                    responseSummary
+                );
+                if (m.body && (Array.isArray(m.body) ? m.body.length > 0 : Object.keys(m.body).length > 0)) {
+                    this.log?.trace(`${m.seq}: ` + JSON.stringify(m.body, undefined, 2));
+                }
+            },
+            onError: e => this.log?.error(e),
+        };
+    }
+
+    dispose(): void {
+        this.disposables.forEach(d => d.dispose());
     }
 }
 

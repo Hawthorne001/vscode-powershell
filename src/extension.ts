@@ -22,14 +22,9 @@ import { ShowHelpFeature } from "./features/ShowHelp";
 import { SpecifyScriptArgsFeature } from "./features/DebugSession";
 import { Logger } from "./logging";
 import { SessionManager } from "./session";
-import { LogLevel, getSettings } from "./settings";
+import { getSettings } from "./settings";
 import { PowerShellLanguageId } from "./utils";
 import { LanguageClientConsumer } from "./languageClientConsumer";
-
-// The most reliable way to get the name and version of the current extension.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-var-requires
-const PackageJSON: any = require("../package.json");
-
 // The 1DS telemetry key, which is just shared among all Microsoft extensions
 // (and isn't sensitive).
 const TELEMETRY_KEY = "0c6ae279ed8443289764825290e4f9e2-1a736e7c-1324-4338-be46-fc2a58ae4d14-7255";
@@ -47,14 +42,15 @@ const documentSelector: DocumentSelector = [
 ];
 
 export async function activate(context: vscode.ExtensionContext): Promise<IPowerShellExtensionClient> {
-    const logLevel = vscode.workspace.getConfiguration(`${PowerShellLanguageId}.developer`)
-        .get<string>("editorServicesLogLevel", LogLevel.Normal);
-    logger = new Logger(logLevel, context.globalStorageUri);
+    logger = new Logger();
+    if (context.extensionMode === vscode.ExtensionMode.Development) {
+        restartOnExtensionFileChanges(context);
+    }
 
     telemetryReporter = new TelemetryReporter(TELEMETRY_KEY);
 
     const settings = getSettings();
-    logger.writeVerbose(`Loaded settings:\n${JSON.stringify(settings, undefined, 2)}`);
+    logger.writeDebug(`Loaded settings:\n${JSON.stringify(settings, undefined, 2)}`);
 
     languageConfigurationDisposable = vscode.languages.setLanguageConfiguration(
         PowerShellLanguageId,
@@ -117,15 +113,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<IPower
             ],
         });
 
+    interface IPackageInfo {
+        name: string;
+        displayName: string;
+        version: string;
+        publisher: string;
+    }
+    const packageInfo:IPackageInfo = context.extension.packageJSON;
+
     sessionManager = new SessionManager(
         context,
         settings,
         logger,
         documentSelector,
-        PackageJSON.name,
-        PackageJSON.displayName,
-        PackageJSON.version,
-        PackageJSON.publisher,
+        packageInfo.name,
+        packageInfo.displayName,
+        packageInfo.version,
+        packageInfo.publisher,
         telemetryReporter);
 
     // Register commands that do not require Language client
@@ -137,6 +141,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<IPower
         new PesterTestsFeature(sessionManager, logger),
         new CodeActionsFeature(logger),
         new SpecifyScriptArgsFeature(context),
+
+        vscode.commands.registerCommand(
+            "PowerShell.OpenLogFolder",
+            async () => {await vscode.commands.executeCommand(
+                "vscode.openFolder",
+                context.logUri,
+                { forceNewWindow: true }
+            );}
+        ),
+        vscode.commands.registerCommand(
+            "PowerShell.ShowLogs",
+            () => {logger.showLogPanel();}
+        ),
+        vscode.commands.registerCommand(
+            "GetVsCodeSessionId",
+            () => vscode.env.sessionId
+        ),
+        // Register a command that waits for the Extension Terminal to be active. Can be used by .NET Attach Tasks.
+        registerWaitForPsesActivationCommand(context)
     ];
 
     const externalApi = new ExternalApiFeature(context, sessionManager, logger);
@@ -165,7 +188,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<IPower
         getPowerShellVersionDetails: uuid => externalApi.getPowerShellVersionDetails(uuid),
         waitUntilStarted: uuid => externalApi.waitUntilStarted(uuid),
         getStorageUri: () => externalApi.getStorageUri(),
+        getLogUri: () => externalApi.getLogUri(),
     };
+}
+
+/** Registers a command that waits for PSES Activation and returns the PID, used to auto-attach the PSES debugger */
+function registerWaitForPsesActivationCommand(context: vscode.ExtensionContext): vscode.Disposable {
+    return vscode.commands.registerCommand(
+        "PowerShell.WaitForPsesActivationAndReturnProcessId",
+        async () => {
+            const pidFileName = `PSES-${vscode.env.sessionId}.pid`;
+            const pidFile = vscode.Uri.joinPath(context.globalStorageUri, "sessions", pidFileName);
+            const fs = vscode.workspace.fs;
+            // Wait for the file to be created
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition, no-constant-condition
+            while (true) {
+                try {
+                    const pidContent = await fs.readFile(pidFile);
+                    const pid = parseInt(pidContent.toString(), 10);
+                    try {
+                        // Check if the process is still alive, delete the PID file if not and continue waiting.
+                        // https://nodejs.org/api/process.html#process_process_kill_pid_signal
+                        // "As a special case, a signal of 0 can be used to test for the existence of a process. "
+                        const NODE_TEST_PROCESS_EXISTENCE = 0;
+                        process.kill(pid, NODE_TEST_PROCESS_EXISTENCE);
+                    } catch {
+                        await fs.delete(pidFile);
+                        continue;
+                    }
+                    // VSCode command returns for launch configurations *must* be string type explicitly, will error on number or otherwise.
+                    return pidContent.toString();
+                } catch {
+                    // File doesn't exist yet, wait and try again
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+        }
+    );
+}
+
+/** Restarts the extension host when extension file changes are detected. Useful for development. */
+function restartOnExtensionFileChanges(context: vscode.ExtensionContext): void {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(context.extensionPath, "dist/*.js")
+    );
+
+    context.subscriptions.push(watcher);
+    watcher.onDidChange(({ fsPath }) => {
+        vscode.window.showInformationMessage(`${fsPath.split(context.extensionPath, 2)[1]} changed. Reloading Extension Host...`);
+        vscode.commands.executeCommand("workbench.action.restartExtensionHost");
+    });
 }
 
 export async function deactivate(): Promise<void> {

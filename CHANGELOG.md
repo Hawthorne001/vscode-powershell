@@ -1,5 +1,80 @@
 # PowerShell Extension Release History
 
+## v2025.0.0
+### Tuesday, January 21, 2025
+
+With PowerShell Editor Services [v4.2.0](https://github.com/PowerShell/PowerShellEditorServices/releases/tag/v4.2.0)!
+
+New Year Update!
+
+PowerShell 7.4+ and Windows PowerShell 5.1 (on a best-effort basis)
+are now solely supported as 7.3 LTS and 7.2 are past end-of-support.
+
+A major bug due to a Global Assembly Cache conflict with Serilog
+when using Windows PowerShell has been resolved by removing the
+troublesome dependency. This also came with a wonderful logging
+overhaul for both the server and client. Thanks Justin!
+
+Dependencies and VS Code engine have been updated. Snippets fixed.
+Extension settings are now categorized. Additional PowerShell
+executable path verification fixed.
+
+See more details at the GitHub Release for [v2025.0.0](https://github.com/PowerShell/vscode-powershell/releases/tag/v2025.0.0).
+
+## v2025.1.0-preview
+### Thursday, January 16, 2025
+
+With PowerShell Editor Services [v4.2.0](https://github.com/PowerShell/PowerShellEditorServices/releases/tag/v4.2.0)!
+
+VS Code engine update and snippet fix
+
+See more details at the GitHub Release for [v2025.1.0-preview](https://github.com/PowerShell/vscode-powershell/releases/tag/v2025.1.0-preview).
+
+## v2024.5.2-preview
+### Wednesday, December 04, 2024
+
+With PowerShell Editor Services [v4.1.0](https://github.com/PowerShell/PowerShellEditorServices/releases/tag/v4.1.0)!
+
+Bug fixes and build improvements.
+
+See more details at the GitHub Release for [v2024.5.2-preview](https://github.com/PowerShell/vscode-powershell/releases/tag/v2024.5.2-preview).
+
+## v2024.5.1-preview
+### Monday, November 18, 2024
+
+With PowerShell Editor Services [v4.0.0](https://github.com/PowerShell/PowerShellEditorServices/releases/tag/v4.0.0)!
+
+Drop support for PowerShell <7.4 and logging overhaul
+
+PowerShell 7.2 LTS and 7.3 are now past end-of-support and are now unsupported.
+This is an incompatible API change so we're bumping the major version
+of PowerShell Editor Services.
+Please update to PowerShell 7.4 LTS going forward.
+
+This release contains a logging overhaul which purposely removes our
+dependency on Serilog and should lead to improved stability with
+PowerShell 5.1 (by avoiding a major GAC assembly conflict).
+
+See more details at the GitHub Release for [v2024.5.1-preview](https://github.com/PowerShell/vscode-powershell/releases/tag/v2024.5.1-preview).
+
+## v2024.4.0
+### Monday, November 04, 2024
+
+With PowerShell Editor Services [v3.21.0](https://github.com/PowerShell/PowerShellEditorServices/releases/tag/v3.21.0)!
+
+Call-operator support and various bug fixes.
+
+See more details at the GitHub Release for [v2024.4.0](https://github.com/PowerShell/vscode-powershell/releases/tag/v2024.4.0).
+
+## v2024.5.0-preview
+### Wednesday, October 30, 2024
+
+With PowerShell Editor Services [v3.21.0](https://github.com/PowerShell/PowerShellEditorServices/releases/tag/v3.21.0)!
+
+Call-operator support and various bug fixes.
+
+See more details at the GitHub Release for [v2024.5.0-preview](https://github.com/PowerShell/vscode-powershell/releases/tag/v2024.5.0-preview).
+
 ## v2024.2.2
 ### Friday, May 03, 2024
 

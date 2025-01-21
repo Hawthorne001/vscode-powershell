@@ -23,18 +23,24 @@ export class PowerShellProcess {
     private consoleCloseSubscription?: vscode.Disposable;
 
     private pid?: number;
+    private pidUpdateEmitter?: vscode.EventEmitter<number | undefined>;
 
     constructor(
         public exePath: string,
         private bundledModulesPath: string,
         private isTemp: boolean,
+        private shellIntegrationEnabled: boolean,
         private logger: ILogger,
+        private logDirectoryPath: vscode.Uri,
         private startPsesArgs: string,
         private sessionFilePath: vscode.Uri,
-        private sessionSettings: Settings) {
+        private sessionSettings: Settings,
+        private devMode = false
+    ) {
 
         this.onExitedEmitter = new vscode.EventEmitter<void>();
         this.onExited = this.onExitedEmitter.event;
+        this.pidUpdateEmitter = new vscode.EventEmitter<number | undefined>();
     }
 
     public async start(cancellationToken: vscode.CancellationToken): Promise<IEditorServicesSessionDetails | undefined> {
@@ -50,7 +56,7 @@ export class PowerShellProcess {
                 : "";
 
         this.startPsesArgs +=
-            `-LogPath '${utils.escapeSingleQuotes(this.logger.logDirectoryPath.fsPath)}' ` +
+            `-LogPath '${utils.escapeSingleQuotes(this.logDirectoryPath.fsPath)}' ` +
             `-SessionDetailsPath '${utils.escapeSingleQuotes(this.sessionFilePath.fsPath)}' ` +
             `-FeatureFlags @(${featureFlags}) `;
 
@@ -88,16 +94,36 @@ export class PowerShellProcess {
                 startEditorServices);
         } else {
             // Otherwise use -EncodedCommand for better quote support.
-            this.logger.writeVerbose("Using Base64 -EncodedCommand but logging as -Command equivalent.");
+            this.logger.writeDebug("Using Base64 -EncodedCommand but logging as -Command equivalent.");
             powerShellArgs.push(
                 "-EncodedCommand",
                 Buffer.from(startEditorServices, "utf16le").toString("base64"));
         }
 
-        this.logger.writeVerbose(`Starting process: ${this.exePath} ${powerShellArgs.slice(0, -2).join(" ")} -Command ${startEditorServices}`);
+        this.logger.writeDebug(`Starting process: ${this.exePath} ${powerShellArgs.slice(0, -2).join(" ")} -Command ${startEditorServices}`);
 
         // Make sure no old session file exists
         await this.deleteSessionFile(this.sessionFilePath);
+
+        // When VS Code shell integration is enabled, the script expects certain
+        // variables to be added to the environment.
+        let envMixin = {};
+        if (this.shellIntegrationEnabled) {
+            envMixin = {
+                "VSCODE_INJECTION": "1",
+                // There is no great way to check if we are running stable VS
+                // Code. Since this is used to disable experimental features, we
+                // default to stable unless we're definitely running Insiders.
+                "VSCODE_STABLE": vscode.env.appName.includes("Insiders") ? "0" : "1",
+                // Maybe one day we can set VSCODE_NONCE...
+            };
+        }
+
+        // Enables Hot Reload in .NET for the attached process
+        // https://devblogs.microsoft.com/devops/net-enc-support-for-lambdas-and-other-improvements-in-visual-studio-2015/
+        if (this.devMode) {
+            (envMixin as Record<string,string>).COMPLUS_FORCEENC = "1";
+        }
 
         // Launch PowerShell in the integrated terminal
         const terminalOptions: vscode.TerminalOptions = {
@@ -105,6 +131,7 @@ export class PowerShellProcess {
             shellPath: this.exePath,
             shellArgs: powerShellArgs,
             cwd: await validateCwdSetting(this.logger),
+            env: envMixin,
             iconPath: new vscode.ThemeIcon("terminal-powershell"),
             isTransient: true,
             hideFromUser: this.sessionSettings.integratedConsole.startInBackground,
@@ -119,6 +146,7 @@ export class PowerShellProcess {
         this.consoleTerminal = vscode.window.createTerminal(terminalOptions);
         this.pid = await this.getPid();
         this.logger.write(`PowerShell process started with PID: ${this.pid}`);
+        this.pidUpdateEmitter?.fire(this.pid);
 
         if (this.sessionSettings.integratedConsole.showOnStartup
             && !this.sessionSettings.integratedConsole.startInBackground) {
@@ -157,7 +185,7 @@ export class PowerShellProcess {
     }
 
     public dispose(): void {
-        this.logger.writeVerbose(`Disposing PowerShell process with PID: ${this.pid}`);
+        this.logger.writeDebug(`Disposing PowerShell process with PID: ${this.pid}`);
 
         void this.deleteSessionFile(this.sessionFilePath);
 
@@ -169,6 +197,9 @@ export class PowerShellProcess {
 
         this.consoleCloseSubscription?.dispose();
         this.consoleCloseSubscription = undefined;
+
+        this.pidUpdateEmitter?.dispose();
+        this.pidUpdateEmitter = undefined;
     }
 
     public sendKeyPress(): void {
@@ -210,7 +241,7 @@ export class PowerShellProcess {
         const warnAt = numOfTries - PowerShellProcess.warnUserThreshold;
 
         // Check every second.
-        this.logger.writeVerbose(`Waiting for session file: ${this.sessionFilePath}`);
+        this.logger.writeDebug(`Waiting for session file: ${this.sessionFilePath}`);
         for (let i = numOfTries; i > 0; i--) {
             if (cancellationToken.isCancellationRequested) {
                 this.logger.writeWarning("Canceled while waiting for session file.");
@@ -223,7 +254,7 @@ export class PowerShellProcess {
             }
 
             if (await utils.checkIfFileExists(this.sessionFilePath)) {
-                this.logger.writeVerbose("Session file found.");
+                this.logger.writeDebug("Session file found.");
                 return await this.readSessionFile(this.sessionFilePath);
             }
 
